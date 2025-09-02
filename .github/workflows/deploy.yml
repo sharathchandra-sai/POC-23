@@ -1,0 +1,55 @@
+name: CI/CD - Build & Deploy Java App (Amazon Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to deploy'
+        required: true
+        default: 'main'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.inputs.branch }}
+
+    - name: Set up Java
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Build with Maven
+      run: mvn clean package -DskipTests
+
+    - name: Prepare SSH Key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+    - name: Deploy and Run on EC2 (Amazon Linux)
+      run: |
+        ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+          echo "Stopping old app..."
+          pgrep -f 'app.jar' | xargs kill -9 || true
+          mkdir -p /home/ec2-user/app
+        EOF
+
+        echo "Uploading new JAR..."
+        scp target/demo-1.0-SNAPSHOT-jar-with-dependencies.jar ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/ec2-user/app/app.jar
+
+        ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+          echo "Starting new app..."
+          cd /home/ec2-user/app
+          nohup java -jar app.jar > app.log 2>&1 &
+          sleep 10
+          echo "Checking if app is running..."
+          curl -I http://localhost:8080 || echo "App not yet ready"
+        EOF
